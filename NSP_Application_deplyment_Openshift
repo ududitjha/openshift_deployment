@@ -1,0 +1,199 @@
+NSP aaplication deployment process on openshift 
+#################################################
+Pull the eap 6.4 docker image using below command on local system.
+docker pull registry.access.redhat.com/jboss-eap-6/eap64-openshift:latest
+
+Create tar of downloaded docker image.
+docker save -o eap6.4.tar registry.access.redhat.com/jboss-eap-6/eap64-openshift:latest
+
+Copy created jboss tar into openshit server.
+rsync -avzP eap6.4.tar root@x.x.x.x:/tmp/
+
+Load eap6.4 tar into docker registry.
+docker load -i eap6.4.tar
+
+Configure user id 1003 into loaded docker image using docker file.
+[root@master2 crt]# cat Dockerfile 
+FROM docker-registry.default.svc:5000/openshift/jboss-eap-6:4
+COPY bin/launch/openshift-common.sh /opt/eap/bin/launch/openshift-common.sh
+USER 1003
+[root@master2 crt]#
+
+Build that docker image into openshift server and tag & push into openshift registry.:
+[root@master2 crt]# docker build -t eap64-openshift-04022020:latest .
+[root@master2 crt]# docker tag eap64-openshift-04022020:latest docker-registry.default.svc:5000/openshift/eap64-openshift-04022020:latest
+[root@master2 crt]# docker login -u $(oc whoami) -p $(oc whoami -t)  docker-registry.default.svc:5000
+[root@master2 crt]# docker push docker-registry.default.svc:5000/openshift/eap64-openshift-04022020:latest
+#################Preration Before starting deployment#####
+We have to arrage folder accodering to the below mentioned steps.
+
+[root@master2 sshomepage]# ls
+custom  eapsvc.yml  homepage.env  NspHomePage.war
+[root@master2 sshomepage]# ls custom/
+drivers.env  install.sh
+[root@master2 sshomepage]# cat custom/drivers.env 
+DRIVERS=POSTGRES
+POSTGRES_DRIVER_NAME=postgresql2
+POSTGRES_DRIVER_MODULE=org.postgresql
+POSTGRES_DRIVER_CLASS=org.postgresql.Driver
+[root@master2 sshomepage]# cat custom/install.sh 
+#!/bin/bash
+injected_dir=$1
+source /usr/local/s2i/install-common.sh
+configure_drivers ${injected_dir}/drivers.env
+[root@master2 sshomepage]# cat eapsvc.yml 
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    description: The JGroups ping port for clustering.
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+  labels:
+    app: sshomepage
+  name: sshome-ping
+spec:
+  clusterIP: None
+  ports:
+  - name: ping
+    port: 8888
+    protocol: TCP
+    targetPort: 8888
+  selector:
+    app: sshomepage
+    deploymentconfig: sshomepage
+  sessionAffinity: None
+  type: ClusterIP
+status:
+  loadBalancer: {}
+[root@master2 sshomepage]# cat homepage.env 
+JGROUPS_PING_PROTOCOL=openshift.DNS_PING
+OPENSHIFT_DNS_PING_SERVICE_NAME=sshome-ping
+OPENSHIFT_DNS_PING_SERVICE_PORT=8888
+JGROUPS_CLUSTER_PASSWORD=keenable
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD="Keenable#321"
+###
+DB_SERVICE_PREFIX_MAPPING=myPool-postgresql2=SSHOME2
+#SSHOME_DRIVER=postgresql2
+#SSHOME_JNDI=java:jboss/SNSPHP_201920
+#SSHOME_NONXA=true
+#SSHOME_USERNAME="nsp_write_user"
+#SSHOME_PASSWORD="nic@123"
+#SSHOME_URL=jdbc:postgresql://10.247.51.149:5432/nsp_db_201920
+#SSHOME_MIN_POOL_SIZE=1
+#SSHOME_MAX_POOL_SIZE=5
+#SSHOME_BACKGROUND_VALIDATION=true
+#SSHOME_CONNECTION_CHECKER=org.jboss.jca.adapters.jdbc.extensions.postgres.PostgreSQLValidConnectionChecker
+#SSHOME_BACKGROUND_VALIDATION=true
+#SSHOME_BACKGROUND_VALIDATION_MILLIS=120000
+#SSHOME_EXCEPTION_SORTER=org.jboss.jca.adapters.jdbc.extensions.postgres.PostgreSQL
+
+SSHOME2_DRIVER=postgresql2
+SSHOME2_JNDI=java:/jboss/NSPHP_201920
+SSHOME2_NONXA=true
+SSHOME2_USERNAME="nsp_write_user"
+SSHOME2_PASSWORD="nic@123"
+SSHOME2_URL=jdbc:postgresql://10.247.51.149:5432/nsp_db_201920
+SSHOME2_MIN_POOL_SIZE=1
+SSHOME2_MAX_POOL_SIZE=5
+SSHOME2_BACKGROUND_VALIDATION=true
+SSHOME2_CONNECTION_CHECKER=org.jboss.jca.adapters.jdbc.extensions.postgres.PostgreSQLValidConnectionChecker
+SSHOME2_BACKGROUND_VALIDATION=true
+SSHOME2_BACKGROUND_VALIDATION_MILLIS=120000
+SSHOME2_EXCEPTION_SORTER=org.jboss.jca.adapters.jdbc.extensions.postgres.PostgreSQL
+[root@master2 sshomepage]#
+
+
+Create new project and run anyuid command for run eap6.4 image with 1003 id for specific project.
+[root@master2 ~]# oc new-project nspadmin
+[root@master2 ~]# oc adm policy add-scc-to-user anyuid -z default
+#################################################
+Deployment Steps for NSP application
+######################IVER########################
+Using This Command we are creating Build Config for IVER .
+oc new-build --binary=true eap64-openshift-04022020 --name=nsiver --env CUSTOM_INSTALL_DIRECTORIES=custom
+
+Using this command we are adding datasource driver and application into build config for IVER.
+oc start-build nsiver --from-dir=. --follow
+
+Using this command we are launching new pod of IVER with datasource through the envoirement varialbe.
+oc new-app nsiver --env-file=nsiver.env
+####################DEMO########################
+
+Using This Command we are creating Build Config for DEMO .
+oc new-build --binary=true eap64-openshift-04022020 --name=nsdemo --env CUSTOM_INSTALL_DIRECTORIES=custom
+
+Using this command we are adding datasource driver and application into build config for DEMO.
+oc start-build nsdemo --from-dir=. --follow
+
+Using this command we are launching new pod of DEMO with datasource through the envoirement varialbe.
+oc new-app nsdemo --env-file=nsdemo.env
+#####################NSPADMIN####################
+Using This Command we are creating Build Config for NSPADMIN .
+oc new-build --binary=true eap64-openshift-04022020 --name=nsnapadmin --env CUSTOM_INSTALL_DIRECTORIES=custom
+
+Using this command we are adding datasource driver and application into build config for NSPADMIN.
+oc start-build nsnapadmin --from-dir=. --follow
+
+Using this command we are launching new pod of NSPADMIN with datasource through the envoirement varialbe.
+oc new-app nsnapadmin --env-file=nsnapadmin.env
+######################HDESK#######################
+Using This Command we are creating Build Config for HDESK .
+oc new-build --binary=true eap64-openshift-04022020 --name=nshdesk --env CUSTOM_INSTALL_DIRECTORIES=custom
+
+Using this command we are adding datasource driver and application into build config for HDESK.
+oc start-build nshdesk --from-dir=. --follow
+
+Using this command we are launching new pod of HDESK with datasource through the envoirement varialbe.
+oc new-app nshdesk --env-file=nshdesk.env
+###########PV and PC Creation########################
+[root@master2 ~]# cat nfspv.yml 
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  annotations:
+    pv.kubernetes.io/bound-by-controller: "yes"
+  creationTimestamp: null
+  name: nsapp-pv
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 10Gi
+  nfs:
+    path: /WH_nspnas
+    server: 10.248.16.165
+  persistentVolumeReclaimPolicy: Retain
+status: {}
+[root@master2 ~]# cat nfspvc.yml 
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nsapp-pvc
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: ""
+status: {}
+[root@master2 ~]# oc create -f nfspv.yml
+[root@master2 ~]# oc create -f nfspv.yml
+#############################################################################################
+Volume Attachment into existing DC.
+
+Add PV into our application deploymentconfig for DEMO application.
+oc set volume dc/nsdemo --add --name=nfsvolume  --type=persistentVolumeClaim --claim-name=nsapp-pvc --mount-path=/nspapp 
+
+Add PV into our application deploymentconfig for IVER application.
+oc set volume dc/nsiver --add --name=nfsvolume  --type=persistentVolumeClaim --claim-name=nsapp-pvc --mount-path=/nspapp 
+
+Add PV into our application deploymentconfig for NSPADMIN application.
+oc set volume dc/nsnapadmin --add --name=nfsvolume  --type=persistentVolumeClaim --claim-name=nsapp-pvc --mount-path=/nspapp 
+##############################################################################################
+Expose Application route using below command.
+[root@master2 ~]# oc expose svc nsiver --hostname=nsp.gov.in 
+[root@master2 ~]# oc expose svc nshdesk --hostname=nsp.gov.in --path=/hdesk
+[root@master2 ~]# oc expose svc nsdemo --hostname=nsp.gov.in --path=/demo
+[root@master2 ~]# oc expose svc nsnapadmin --hostname=nsp.gov.in --path=/NSPADMIN

@@ -1,0 +1,268 @@
+Scholarship aaplication deployment process on openshift 
+#################################################
+Pull the eap 6.4 docker image using below command on local system.
+docker pull registry.access.redhat.com/jboss-eap-6/eap64-openshift:latest
+
+Create tar of downloaded docker image.
+docker save -o eap6.4.tar registry.access.redhat.com/jboss-eap-6/eap64-openshift:latest
+
+Copy created jboss tar into openshit server.
+rsync -avzP eap6.4.tar root@x.x.x.x:/tmp/
+
+Load eap6.4 tar into docker registry.
+docker load -i eap6.4.tar
+
+Configure user id 1003 into loaded docker image using docker file.
+[root@master2 crt]# cat Dockerfile 
+FROM docker-registry.default.svc:5000/openshift/jboss-eap-6:4
+COPY bin/launch/openshift-common.sh /opt/eap/bin/launch/openshift-common.sh
+USER 1003
+[root@master2 crt]#
+
+Build that docker image into openshift server and tag & push into openshift registry.:
+[root@master2 crt]# docker build -t eap64-openshift-04022020:latest .
+[root@master2 crt]# docker tag eap64-openshift-04022020:latest docker-registry.default.svc:5000/openshift/eap64-openshift-04022020:latest
+[root@master2 crt]# docker login -u $(oc whoami) -p $(oc whoami -t)  docker-registry.default.svc:5000
+[root@master2 crt]# docker push docker-registry.default.svc:5000/openshift/eap64-openshift-04022020:latest
+
+Create new project and run anyuid command for run eap6.4 image with 1003 id for specific project.
+[root@master2 ~]# oc new-project scholarships
+#################Preration Before starting deployment#####
+We have to arrage folder accodering to the below mentioned steps.
+
+[root@master2 sshomepage]# ls
+custom  eapsvc.yml  homepage.env  NspHomePage.war
+[root@master2 sshomepage]# ls custom/
+drivers.env  install.sh
+[root@master2 sshomepage]# cat custom/drivers.env 
+DRIVERS=POSTGRES
+POSTGRES_DRIVER_NAME=postgresql2
+POSTGRES_DRIVER_MODULE=org.postgresql
+POSTGRES_DRIVER_CLASS=org.postgresql.Driver
+[root@master2 sshomepage]# cat custom/install.sh 
+#!/bin/bash
+injected_dir=$1
+source /usr/local/s2i/install-common.sh
+configure_drivers ${injected_dir}/drivers.env
+[root@master2 sshomepage]# cat eapsvc.yml 
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    description: The JGroups ping port for clustering.
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+  labels:
+    app: sshomepage
+  name: sshome-ping
+spec:
+  clusterIP: None
+  ports:
+  - name: ping
+    port: 8888
+    protocol: TCP
+    targetPort: 8888
+  selector:
+    app: sshomepage
+    deploymentconfig: sshomepage
+  sessionAffinity: None
+  type: ClusterIP
+status:
+  loadBalancer: {}
+[root@master2 sshomepage]# cat homepage.env 
+JGROUPS_PING_PROTOCOL=openshift.DNS_PING
+OPENSHIFT_DNS_PING_SERVICE_NAME=sshome-ping
+OPENSHIFT_DNS_PING_SERVICE_PORT=8888
+JGROUPS_CLUSTER_PASSWORD=keenable
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD="Keenable#321"
+###
+DB_SERVICE_PREFIX_MAPPING=myPool-postgresql2=SSHOME2
+#SSHOME_DRIVER=postgresql2
+#SSHOME_JNDI=java:jboss/SNSPHP_201920
+#SSHOME_NONXA=true
+#SSHOME_USERNAME="nsp_write_user"
+#SSHOME_PASSWORD="nic@123"
+#SSHOME_URL=jdbc:postgresql://10.247.51.149:5432/nsp_db_201920
+#SSHOME_MIN_POOL_SIZE=1
+#SSHOME_MAX_POOL_SIZE=5
+#SSHOME_BACKGROUND_VALIDATION=true
+#SSHOME_CONNECTION_CHECKER=org.jboss.jca.adapters.jdbc.extensions.postgres.PostgreSQLValidConnectionChecker
+#SSHOME_BACKGROUND_VALIDATION=true
+#SSHOME_BACKGROUND_VALIDATION_MILLIS=120000
+#SSHOME_EXCEPTION_SORTER=org.jboss.jca.adapters.jdbc.extensions.postgres.PostgreSQL
+
+SSHOME2_DRIVER=postgresql2
+SSHOME2_JNDI=java:/jboss/NSPHP_201920
+SSHOME2_NONXA=true
+SSHOME2_USERNAME="nsp_write_user"
+SSHOME2_PASSWORD="nic@123"
+SSHOME2_URL=jdbc:postgresql://10.247.51.149:5432/nsp_db_201920
+SSHOME2_MIN_POOL_SIZE=1
+SSHOME2_MAX_POOL_SIZE=5
+SSHOME2_BACKGROUND_VALIDATION=true
+SSHOME2_CONNECTION_CHECKER=org.jboss.jca.adapters.jdbc.extensions.postgres.PostgreSQLValidConnectionChecker
+SSHOME2_BACKGROUND_VALIDATION=true
+SSHOME2_BACKGROUND_VALIDATION_MILLIS=120000
+SSHOME2_EXCEPTION_SORTER=org.jboss.jca.adapters.jdbc.extensions.postgres.PostgreSQL
+[root@master2 sshomepage]#
+
+
+Create new project and run anyuid command for run eap6.4 image with 1003 id for specific project.
+[root@master2 ~]# oc new-project nspadmin
+[root@master2 ~]# oc adm policy add-scc-to-user anyuid -z default
+#################################################
+Deployment Steps for NSP application
+######################FRESH1819########################
+Using This Command we are creating Build Config for FRESH1819 .
+oc new-build --binary=true eap64-openshift-04022020 --name=ssfresh1819 --env CUSTOM_INSTALL_DIRECTORIES=custom
+
+Using this command we are adding datasource driver and application into build config for FRESH1819.
+oc start-build ssfresh1819 --from-dir=. --follow
+
+Using this command we are launching new pod of FRESH1819 with datasource through the envoirement varialbe.
+oc new-app ssfresh1819 --env-file=ssfresh1819.env
+####################FRESH1920########################
+
+Using This Command we are creating Build Config for FRESH1920
+oc new-build --binary=true eap64-openshift-04022020 --name=ssfresh1920 --env CUSTOM_INSTALL_DIRECTORIES=custom
+
+Using this command we are adding datasource driver and application into build config for FRESH1920
+oc start-build ssfresh1920 --from-dir=. --follow
+
+Using this command we are launching new pod of FRESH1920 with datasource through the envoirement varialbe.
+oc new-app ssfresh1920 --env-file=ssfresh1920.env
+#####################FRESH1718####################
+Using This Command we are creating Build Config for FRESH1718 .
+oc new-build --binary=true eap64-openshift-04022020 --name=ssnsp1718 --env CUSTOM_INSTALL_DIRECTORIES=custom
+
+Using this command we are adding datasource driver and application into build config for FRESH1718.
+oc start-build ssnsp1718 --from-dir=. --follow
+
+Using this command we are launching new pod of FRESH1718 with datasource through the envoirement varialbe.
+oc new-app ssnsp1718 --env-file=ssnsp1718.env
+######################FRESH201617#######################
+Using This Command we are creating Build Config for FRESH201617 .
+oc new-build --binary=true eap64-openshift-04022020 --name=ssnsp201617 --env CUSTOM_INSTALL_DIRECTORIES=custom
+
+Using this command we are adding datasource driver and application into build config for FRESH201617.
+oc start-build ssnsp201617 --from-dir=. --follow
+
+Using this command we are launching new pod of FRESH201617 with datasource through the envoirement varialbe.
+oc new-app ssnsp201617 --env-file=ssnsp201617.env
+######################RENEWAL1819########################
+Using This Command we are creating Build Config for RENEWAL1819 .
+oc new-build --binary=true eap64-openshift-04022020 --name=ssrenewal1819 --env CUSTOM_INSTALL_DIRECTORIES=custom
+
+Using this command we are adding datasource driver and application into build config for RENEWAL1819.
+oc start-build ssrenewal1819 --from-dir=. --follow
+
+Using this command we are launching new pod of RENEWAL1819 with datasource through the envoirement varialbe.
+oc new-app ssrenewal1819 --env-file=ssrenewal1819.env
+####################RENEWAL1920########################
+
+Using This Command we are creating Build Config for RENEWAL1920
+oc new-build --binary=true eap64-openshift-04022020 --name=ssrenewal1920 --env CUSTOM_INSTALL_DIRECTORIES=custom
+
+Using this command we are adding datasource driver and application into build config for RENEWAL1920
+oc start-build ssrenewal1920 --from-dir=. --follow
+
+Using this command we are launching new pod of RENEWAL1920 with datasource through the envoirement varialbe.
+oc new-app ssrenewal1920 --env-file=ssrenewal1920.env
+#####################RENEWAL1718####################
+Using This Command we are creating Build Config for RENEWAL1718 .
+oc new-build --binary=true eap64-openshift-04022020 --name=ssrenewal1718 --env CUSTOM_INSTALL_DIRECTORIES=custom
+
+Using this command we are adding datasource driver and application into build config for RENEWAL1718.
+oc start-build ssrenewal1718 --from-dir=. --follow
+
+Using this command we are launching new pod of RENEWAL1718 with datasource through the envoirement varialbe.
+oc new-app ssrenewal1718 --env-file=ssrenewal1718.env
+######################RENEWAL201617#######################
+Using This Command we are creating Build Config for RENEWAL201617 .
+oc new-build --binary=true eap64-openshift-04022020 --name=ssrenewal1617 --env CUSTOM_INSTALL_DIRECTORIES=custom
+
+Using this command we are adding datasource driver and application into build config for RENEWAL201617.
+oc start-build ssrenewal1617 --from-dir=. --follow
+
+Using this command we are launching new pod of RENEWAL201617 with datasource through the envoirement varialbe.
+oc new-app ssrenewal1617 --env-file=ssrenewal1617.env
+######################HOMEPAGE#######################
+Using This Command we are creating Build Config for HOMEPAGE .
+oc new-build --binary=true eap64-openshift-04022020 --name=sshomepage --env CUSTOM_INSTALL_DIRECTORIES=custom
+
+Using this command we are adding datasource driver and application into build config for HOMEPAGE.
+oc start-build sshomepage --from-dir=. --follow
+
+Using this command we are launching new pod of HOMEPAGE with datasource through the envoirement varialbe.
+oc new-app sshomepage --env-file=sshomepage.env
+###########PV and PC Creation########################
+[root@master2 ~]# cat nfspv.yml 
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  annotations:
+    pv.kubernetes.io/bound-by-controller: "yes"
+  creationTimestamp: null
+  name: ssapp-pv
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 10Gi
+  nfs:
+    path: /WH_nspnas
+    server: 10.248.16.165
+  persistentVolumeReclaimPolicy: Retain
+status: {}
+[root@master2 ~]# cat nfspvc.yml 
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ssapp-pvc
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: ""
+status: {}
+[root@master2 ~]#
+[root@master2 ~]# oc create -f nfspv.yml
+[root@master2 ~]# oc create -f nfspv.yml
+#############################################################################################
+Volume Attachment into existing DC.
+Add PV into our application deploymentconfig for FRESH1819 application.
+oc set volume dc/ssfresh1819 --add --name=nfsvolume  --type=persistentVolumeClaim --claim-name=ssapp-pvc --mount-path=/nspapp 
+
+Add PV into our application deploymentconfig for FRESH1920 application.
+oc set volume dc/ssfresh1920 --add --name=nfsvolume  --type=persistentVolumeClaim --claim-name=ssapp-pvc --mount-path=/nspapp 
+
+Add PV into our application deploymentconfig for FRESH1718 application.
+oc set volume dc/ssnsp1718 --add --name=nfsvolume  --type=persistentVolumeClaim --claim-name=ssapp-pvc --mount-path=/nspapp 
+
+Add PV into our application deploymentconfig for FRESH201617 application.
+oc set volume dc/ssnsp201617 --add --name=nfsvolume  --type=persistentVolumeClaim --claim-name=ssapp-pvc --mount-path=/nspapp 
+
+Add PV into our application deploymentconfig for RENEWAL201617 application.
+oc set volume dc/ssrenewal1617 --add --name=nfsvolume  --type=persistentVolumeClaim --claim-name=ssapp-pvc --mount-path=/nspapp
+
+Add PV into our application deploymentconfig for RENEWAL1718 application.
+oc set volume dc/ssrenewal1718 --add --name=nfsvolume  --type=persistentVolumeClaim --claim-name=ssapp-pvc --mount-path=/nspapp 
+
+Add PV into our application deploymentconfig for RENEWAL1819 application.
+oc set volume dc/ssrenewal1819 --add --name=nfsvolume  --type=persistentVolumeClaim --claim-name=ssapp-pvc --mount-path=/nspapp 
+
+Add PV into our application deploymentconfig for RENEWAL1920 application.
+oc set volume dc/ssrenewal1920 --add --name=nfsvolume  --type=persistentVolumeClaim --claim-name=ssapp-pvc --mount-path=/nspapp 
+##############################################################################################
+Expose Application route using below command.
+[root@master2 ~]# oc expose svc sshomepage --hostname=scholarships.gov.in 
+[root@master2 ~]# oc expose svc ssfresh1819 --hostname=scholarships.gov.in --path=/hdesk
+[root@master2 ~]# oc expose svc ssfresh1920 --hostname=scholarships.gov.in --path=/demo
+[root@master2 ~]# oc expose svc ssnsp201617 --hostname=scholarships.gov.in --path=/NSPADMIN
+[root@master2 ~]# oc expose svc ssnsp1718 --hostname=scholarships.gov.in --path=/NSPADMIN
+[root@master2 ~]# oc expose svc ssrenewal1617 --hostname=scholarships.gov.in --path=/NSPADMIN
+[root@master2 ~]# oc expose svc ssrenewal1718 --hostname=scholarships.gov.in --path=/NSPADMIN
+[root@master2 ~]# oc expose svc ssrenewal1819 --hostname=scholarships.gov.in --path=/NSPADMIN
+[root@master2 ~]# oc expose svc ssrenewal1920 --hostname=scholarships.gov.in --path=/NSPADMIN
